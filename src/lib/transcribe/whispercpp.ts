@@ -16,6 +16,12 @@ import type { TranscribeResponse } from "./types";
    browser encodes 16 kHz mono WAV for this backend (the token route's 409
    names the batch format). */
 const WHISPERCPP_TIMEOUT_MS = 120_000;
+
+/** LLV_WHISPERCPP_TIMEOUT_MS (a positive integer), else 120 s. */
+export function whisperCppTimeoutMs(): number {
+  const env = Number(process.env.LLV_WHISPERCPP_TIMEOUT_MS);
+  return Number.isInteger(env) && env > 0 ? env : WHISPERCPP_TIMEOUT_MS;
+}
 export const WHISPERCPP_DEFAULT_MODEL = "ggml-medium-q8_0.bin";
 const BINARY = "whisper-cli";
 const FALLBACK_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
@@ -120,7 +126,14 @@ function modelFilesIn(dir: string): string[] {
 function newest(files: string[]): string | null {
   let best: { file: string; mtime: number } | null = null;
   for (const file of files) {
-    const mtime = fs.statSync(file).mtimeMs;
+    /* A file can vanish after it was listed (the setup script renames its
+       .part download into place); it is skipped, never a resolution error. */
+    let mtime: number;
+    try {
+      mtime = fs.statSync(file).mtimeMs;
+    } catch {
+      continue;
+    }
     if (!best || mtime > best.mtime) best = { file, mtime };
   }
   return best?.file ?? null;
@@ -201,6 +214,7 @@ export function whisperCppTranscribe(
   model: string,
   audioPath: string,
   language: string,
+  timeoutMs: number = whisperCppTimeoutMs(),
 ): Promise<TranscribeResponse> {
   /* whisper-cli takes a bare language code ("en", not "en-US"). */
   const args = ["-m", model, "-f", audioPath, "-l", language.split("-")[0] || "auto", "-nt", "-np"];
@@ -208,12 +222,12 @@ export function whisperCppTranscribe(
     execFile(
       binary,
       args,
-      { maxBuffer: 4 * 1024 * 1024, timeout: WHISPERCPP_TIMEOUT_MS },
+      { maxBuffer: 4 * 1024 * 1024, timeout: timeoutMs },
       (error, stdout, stderr) => {
         if (error) {
           const timedOut = error.killed || (error as NodeJS.ErrnoException).code === "ETIMEDOUT";
           const detail = timedOut
-            ? `timed out after ${WHISPERCPP_TIMEOUT_MS / 1000} s`
+            ? `timed out after ${timeoutMs / 1000} s`
             : String(stderr).trim().split("\n").at(-1) || error.message;
           reject(new Error(detail));
           return;

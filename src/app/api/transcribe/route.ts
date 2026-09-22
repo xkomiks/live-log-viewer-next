@@ -24,7 +24,9 @@ const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 const MAX_WAV_BYTES = 20 * 1024 * 1024;
 const LANGUAGE_RE = /^[a-z]{2}(?:-[A-Z]{2})?$/;
 
-export async function POST(req: NextRequest): Promise<NextResponse<TranscribeResponse | ApiError>> {
+export async function POST(
+  req: NextRequest,
+): Promise<NextResponse<TranscribeResponse | ApiError | (ApiError & { batchFormat: "wav" })>> {
   const rejection = rejectCrossOrigin(req);
   if (rejection) return rejection;
 
@@ -74,9 +76,12 @@ export async function POST(req: NextRequest): Promise<NextResponse<TranscribeRes
     if (!status.available || !status.binary || !status.model) {
       return NextResponse.json({ error: `whisper.cpp is not set up: ${status.hint}` }, { status: 503 });
     }
+    /* The client re-encodes the same recording as WAV and resends it once when
+       it sees batchFormat here, so a stale format costs a round trip, not the
+       dictation; the message only surfaces if that resend also fails. */
     if (!wav) {
       return NextResponse.json(
-        { error: "whisper.cpp needs a WAV recording — reload the page so the mic records WAV for it" },
+        { error: "whisper.cpp reads WAV only, and this recording was not WAV", batchFormat: "wav" as const },
         { status: 415 },
       );
     }

@@ -207,7 +207,11 @@ function BackendMenu({ anchorRef, onClose }: { anchorRef: RefObject<HTMLElement 
             {t("mic.keyTitle", { name: t(`stt.${keyOption.id}.name`) })}
           </span>
           <span className="text-[11.5px] leading-snug text-primary">{t(`stt.${keyOption.id}.fix`)}</span>
-          {keyOption.hint ? <span className="text-[11px] leading-snug text-warning">{keyOption.hint}</span> : null}
+          {keyOption.hint ? (
+            <span data-mic-key-hint className="text-[11px] leading-snug text-warning">
+              {keyOption.hint}
+            </span>
+          ) : null}
           <span className="flex items-center gap-1 rounded-[8px] border border-border bg-canvas px-2 py-1.5">
             <code className="min-w-0 flex-1 break-all font-mono text-[10.5px] text-primary">{keyOption.keyPath}</code>
             <button

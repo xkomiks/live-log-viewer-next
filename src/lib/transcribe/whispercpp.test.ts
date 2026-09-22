@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   isWav,
@@ -12,7 +12,16 @@ import {
   whisperCppTranscribe,
 } from "./whispercpp";
 
-const ENV_KEYS = ["HOME", "XDG_CACHE_HOME", "HF_HOME", "HF_HUB_CACHE", "PATH", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL"];
+const ENV_KEYS = [
+  "HOME",
+  "XDG_CACHE_HOME",
+  "HF_HOME",
+  "HF_HUB_CACHE",
+  "PATH",
+  "LLV_WHISPERCPP_BIN",
+  "LLV_WHISPERCPP_MODEL",
+  "LLV_WHISPERCPP_TIMEOUT_MS",
+];
 const saved = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 let root = "";
 
@@ -44,7 +53,9 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "llv-whispercpp-"));
   setEnv("HOME", path.join(root, "home"));
   setEnv("XDG_CACHE_HOME", path.join(root, "cache"));
-  for (const key of ["HF_HOME", "HF_HUB_CACHE", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL"]) setEnv(key, undefined);
+  for (const key of ["HF_HOME", "HF_HUB_CACHE", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL", "LLV_WHISPERCPP_TIMEOUT_MS"]) {
+    setEnv(key, undefined);
+  }
   setEnv("PATH", path.join(root, "bin"));
 });
 
@@ -61,6 +72,27 @@ describe("whisper.cpp model resolution", () => {
     expect(resolveWhisperCppModel()).toBe(override);
     setEnv("LLV_WHISPERCPP_MODEL", path.join(root, "custom", "absent.bin"));
     expect(resolveWhisperCppModel()).toBeNull();
+  });
+
+  test("a model that vanishes between listing and stat is skipped, not thrown", () => {
+    const vanishing = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"), 2_000);
+    const kept = touch(path.join(cacheDir(), "ggml-small.bin"), 1_000);
+    /* The listing's isFile() sees it; the mtime read right after does not. */
+    const realStat = fs.statSync;
+    const seen = new Map<string, number>();
+    const stat = spyOn(fs, "statSync").mockImplementation(((file: fs.PathLike, options?: fs.StatSyncOptions) => {
+      const key = String(file);
+      const calls = (seen.get(key) ?? 0) + 1;
+      seen.set(key, calls);
+      if (key === vanishing && calls > 1) throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+      return realStat(file, options);
+    }) as typeof fs.statSync);
+    try {
+      expect(resolveWhisperCppModel()).toBe(kept);
+      expect(() => whisperCppStatus()).not.toThrow();
+    } finally {
+      stat.mockRestore();
+    }
   });
 
   test("the newest ggml model in the Viewer cache is used", () => {
@@ -133,6 +165,22 @@ describe("whisper-cli invocation", () => {
     expect(text.text).toBe("-m /m.bin -f /a.wav -l auto -nt -np");
     expect((await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "en-US")).text).toContain("-l en ");
     expect((await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "uk")).text).toContain("-l uk ");
+  });
+
+  test("a run past the timeout is killed and rejects with the timeout", async () => {
+    const pidFile = path.join(root, "pid");
+    const bin = script(path.join(root, "bin", "whisper-cli"), `echo $$ > "${pidFile}"; exec /bin/sleep 30`);
+    const started = Date.now();
+    await expect(whisperCppTranscribe(bin, "/m.bin", "/a.wav", "", 300)).rejects.toThrow("timed out after 0.3 s");
+    expect(Date.now() - started).toBeLessThan(10_000);
+    const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  test("LLV_WHISPERCPP_TIMEOUT_MS sets the default timeout", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), "exec /bin/sleep 30");
+    setEnv("LLV_WHISPERCPP_TIMEOUT_MS", "200");
+    await expect(whisperCppTranscribe(bin, "/m.bin", "/a.wav", "")).rejects.toThrow("timed out after 0.2 s");
   });
 
   test("a failing run rejects with the last stderr line", async () => {

@@ -18,6 +18,11 @@
  * and the conversation has to still be open afterwards. The hover hints are
  * read the same way as the menus, from a real hover (a focus on the phone).
  *
+ * The microphone's menu also opens the setup panel of a backend that is not
+ * set up — whisper.cpp here, answered as missing its binary — and the panel's
+ * hint row, the one line that names what is missing, has to be rendered whole
+ * inside the menu and the window; its text and box are recorded.
+ *
  * The microphone's menu is also opened from the keyboard: focus on Dictate,
  * Shift+F10. Focus has to be inside the menu after it opens and after one Tab,
  * and back on Dictate after Escape, because a portalled menu is otherwise out
@@ -369,6 +374,7 @@ async function openBoard(browser: Browser, baseUrl: string, project: string, vie
       { id: "chatgpt", available: true, keyPath: "~/.config/stt/chatgpt" },
       { id: "elevenlabs", available: false, keyPath: "~/.config/stt/elevenlabs" },
       { id: "soniox", available: false, keyPath: "~/.config/stt/soniox" },
+      { id: "whispercpp", available: false, keyPath: WHISPERCPP_BIN, hint: WHISPERCPP_HINT },
     ] }),
   }));
   await page.goto(`${baseUrl}/#p=${encodeURIComponent(project)}`, { waitUntil: "domcontentloaded" });
@@ -379,6 +385,9 @@ async function openBoard(browser: Browser, baseUrl: string, project: string, vie
 }
 
 const MIC_MENU = '[role="menu"][aria-label="Transcription method"]';
+/* What the backend route answers for a machine without whisper-cli. */
+const WHISPERCPP_BIN = "/opt/homebrew/bin/whisper-cli";
+const WHISPERCPP_HINT = "whisper-cli is not installed (brew install whisper-cpp) — run scripts/setup-whispercpp.sh";
 const LIGHTBOX = '[role="dialog"][aria-modal="true"][aria-label^="image"]';
 const PICTURE = 'img[alt^="image"]';
 const ACCOUNTS_DIALOG = '[role="dialog"][aria-label="Claude accounts"]';
@@ -567,6 +576,33 @@ async function hintOf(page: Page, scope: string, label: string, steps: string[],
   return { selector: "[data-layering-probe]" };
 }
 
+/** Picks the unavailable whisper.cpp option and reads the setup panel it opens:
+    the hint row must be rendered, carry the route's text, and sit whole inside
+    the menu and the window. */
+async function whisperCppKeyPanel(page: Page, steps: string[]): Promise<Opened> {
+  await page.locator(`${MIC_MENU} [role="menuitemradio"]`, { hasText: "whisper.cpp" }).first().click();
+  steps.push("picked whisper.cpp, which the route answers as not set up");
+  const hint = page.locator(`${MIC_MENU} [data-mic-key-hint]`);
+  await hint.waitFor({ state: "visible", timeout: 5_000 });
+  const reading = await page.evaluate((selector) => {
+    const menu = document.querySelector(selector)!.getBoundingClientRect();
+    const row = document.querySelector(`${selector} [data-mic-key-hint]`)!;
+    const box = row.getBoundingClientRect();
+    const round = (r: DOMRect) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
+    return {
+      text: row.textContent?.trim() ?? "",
+      path: document.querySelector(`${selector} code`)?.textContent?.trim() ?? "",
+      box: round(box),
+      inMenu: box.left >= menu.left && box.right <= menu.right && box.top >= menu.top && box.bottom <= menu.bottom,
+      inWindow: box.left >= 0 && box.top >= 0 && box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+    };
+  }, MIC_MENU);
+  if (reading.text !== WHISPERCPP_HINT) throw new Error(`the hint row reads "${reading.text}"`);
+  if (reading.path !== WHISPERCPP_BIN) throw new Error(`the panel's path reads "${reading.path}"`);
+  if (!reading.inMenu || !reading.inWindow) throw new Error(`the hint row is cut off: ${JSON.stringify(reading)}`);
+  return { selector: MIC_MENU, note: `whisper.cpp setup panel hint row: ${JSON.stringify(reading)}` };
+}
+
 const PHONE_CONVERSATION = 'button[aria-label="Dictate"]';
 
 const CASES: Record<string, { desktop: Step; phone: Step }> = {
@@ -592,6 +628,18 @@ const CASES: Record<string, { desktop: Step; phone: Step }> = {
       await openOnPhone(page, steps, "Open Ship the review evidence for the readiness board and keep the verdict linked.", "a task's conversation from the board");
       await rightClickMic(page, "body", steps, "the task's conversation");
       return { selector: MIC_MENU };
+    },
+  },
+  /* The setup panel of a backend that is not set up names what is missing. */
+  "mic-key-panel-whispercpp": {
+    desktop: async (page, steps) => {
+      await rightClickMic(page, "section.seat", steps, "the orchestrator seat above the board");
+      return whisperCppKeyPanel(page, steps);
+    },
+    phone: async (page, steps) => {
+      await openOnPhone(page, steps, "Open the orchestrator's conversation — finished", "the orchestrator's conversation");
+      await rightClickMic(page, "body", steps, "the orchestrator's conversation");
+      return whisperCppKeyPanel(page, steps);
     },
   },
   /* A menu opened inside a modal lands above it. */

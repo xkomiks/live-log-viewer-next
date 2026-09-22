@@ -74,7 +74,7 @@ let tokenInflight: Promise<LiveToken | null> | null = null;
 /* What a batch recording is posted as. The token route's 409 names it: the
    whispercpp backend reads WAV only, everything else takes webm/opus. It is
    refreshed by every mint, so it follows the backend the mic menu picked. */
-type BatchFormat = "wav" | "webm";
+export type BatchFormat = "wav" | "webm";
 let batchFormat: BatchFormat = "webm";
 
 /* A non-200 from the token route means live mode is off (other backend, no
@@ -107,6 +107,60 @@ export function prewarmLiveToken(): void {
     tokenCache = { token, expiresAt: Date.now() + (token ? TOKEN_FRESH_MS : TOKEN_NULL_MS) };
     return token;
   });
+}
+
+export type UploadResult =
+  | { ok: true; text: string; format: BatchFormat }
+  | { ok: false; error: string | null; wavFailed?: boolean; format: BatchFormat };
+
+export interface UploadDeps {
+  send: (form: FormData) => Promise<Response>;
+  toWav: (blob: Blob) => Promise<Blob>;
+}
+
+const defaultUploadDeps: UploadDeps = {
+  send: (form) => fetch("/api/transcribe", { method: "POST", body: form }),
+  toWav: recordingToWav,
+};
+
+/**
+ * Posts a batch recording in `format`. The format is learned from the token
+ * route's 409, which can be stale (the backend changed through the setup
+ * script, another tab or the override file, or the mint failed), so a 415
+ * that names `batchFormat: "wav"` re-encodes the same recording and resends
+ * it once — the press still transcribes, and the answer carries the format
+ * to remember. A network failure throws, as fetch does.
+ */
+export async function uploadRecording(
+  blob: Blob,
+  format: BatchFormat,
+  deps: UploadDeps = defaultUploadDeps,
+): Promise<UploadResult> {
+  let current = format;
+  for (let attempt = 0; ; attempt += 1) {
+    const form = new FormData();
+    if (current === "wav") {
+      let wav: Blob;
+      try {
+        wav = await deps.toWav(blob);
+      } catch {
+        return { ok: false, error: null, wavFailed: true, format: current };
+      }
+      form.append("file", wav, "dictation.wav");
+    } else {
+      form.append("file", blob, "dictation.webm");
+    }
+    const res = await deps.send(form);
+    const json = (await res.json().catch(() => ({}))) as { text?: unknown; error?: unknown; batchFormat?: unknown };
+    if (res.status === 415 && json.batchFormat === "wav" && current !== "wav" && attempt === 0) {
+      current = "wav";
+      continue;
+    }
+    if (!res.ok || typeof json.text !== "string") {
+      return { ok: false, error: typeof json.error === "string" ? json.error : null, format: current };
+    }
+    return { ok: true, text: json.text, format: current };
+  }
 }
 
 /** Drops a cached mint (live token or "no live mode" answer) so the next press
@@ -371,28 +425,14 @@ export function useDictation({ onError, onUnclaimedText, onLiveCommit }: UseDict
     }
     setPhase("busy");
     try {
-      const form = new FormData();
-      if (batchFormat === "wav") {
-        let wav: Blob;
-        try {
-          wav = await recordingToWav(blob);
-        } catch {
-          onError(t("dictation.wavFailed"));
-          resolvePending?.(null);
-          return;
-        }
-        form.append("file", wav, "dictation.wav");
-      } else {
-        form.append("file", blob, "dictation.webm");
-      }
-      const res = await fetch("/api/transcribe", { method: "POST", body: form });
-      const json = (await res.json()) as { text?: string; error?: string };
-      if (!res.ok || typeof json.text !== "string") {
-        onError(json.error ?? t("dictation.failed"));
+      const result = await uploadRecording(blob, batchFormat);
+      batchFormat = result.format;
+      if (!result.ok) {
+        onError(result.wavFailed ? t("dictation.wavFailed") : (result.error ?? t("dictation.failed")));
         resolvePending?.(null);
         return;
       }
-      const text = json.text.trim();
+      const text = result.text.trim();
       if (text) {
         if (resolvePending) resolvePending(text);
         else onUnclaimedText(text);

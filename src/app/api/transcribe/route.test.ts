@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { NextRequest } from "next/server";
@@ -144,7 +146,9 @@ describe("whispercpp branch", () => {
     restores.push(() => transcribe.mockRestore());
     const { response } = await upload("dictation.webm", "audio/webm");
     expect(response.status).toBe(415);
-    expect((await response.json()).error).toContain("WAV");
+    /* Machine-readable, so the client re-encodes and resends instead of
+       telling the operator to reload. */
+    expect(await response.json()).toMatchObject({ batchFormat: "wav", error: expect.stringContaining("WAV") });
     expect(transcribe).not.toHaveBeenCalled();
   });
 
@@ -164,6 +168,37 @@ describe("whispercpp branch", () => {
     const { response } = await upload("dictation.wav", "audio/wav", wavBytes());
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: "whisper.cpp: timed out after 120 s" });
+  });
+
+  test("a whisper-cli run past its timeout answers 502 and its temp WAV is removed", async () => {
+    selectBackend("whispercpp");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "llv-whispercpp-route-"));
+    restores.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const argFile = path.join(dir, "audio-path");
+    const bin = path.join(dir, "whisper-cli");
+    /* $4 is the -f argument: the temp WAV the route wrote. */
+    fs.writeFileSync(bin, `#!/bin/sh\necho "$4" > "${argFile}"\nexec /bin/sleep 30\n`, { mode: 0o755 });
+    const status = spyOn(whispercpp, "whisperCppStatus").mockReturnValue({
+      available: true,
+      binary: bin,
+      model: "/fixture/ggml-medium-q8_0.bin",
+      keyPath: "/fixture/ggml-medium-q8_0.bin",
+      hint: "",
+    });
+    restores.push(() => status.mockRestore());
+    const previous = process.env.LLV_WHISPERCPP_TIMEOUT_MS;
+    process.env.LLV_WHISPERCPP_TIMEOUT_MS = "300";
+    restores.push(() => {
+      if (previous === undefined) delete process.env.LLV_WHISPERCPP_TIMEOUT_MS;
+      else process.env.LLV_WHISPERCPP_TIMEOUT_MS = previous;
+    });
+
+    const { response } = await upload("dictation.wav", "audio/wav", wavBytes());
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "whisper.cpp: timed out after 0.3 s" });
+    const audioPath = fs.readFileSync(argFile, "utf8").trim();
+    expect(audioPath.endsWith(".wav")).toBe(true);
+    expect(fs.existsSync(audioPath)).toBe(false);
   });
 
   test("WAV gets the 20 MB allowance; non-WAV keeps the 16 MB cap", async () => {

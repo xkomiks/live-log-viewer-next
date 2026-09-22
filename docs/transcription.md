@@ -137,7 +137,11 @@ otherwise names what is missing.
 `whisper-cli` reads WAV, not the webm/opus the browser records. When this
 backend is active the token route's `409` answer carries `batchFormat: "wav"`,
 and the browser decodes the recording with an `OfflineAudioContext` and uploads
-16 kHz mono PCM16 WAV instead; the route checks the RIFF/WAVE header. The
+16 kHz mono PCM16 WAV instead; the route checks the RIFF/WAVE header. If the
+browser's idea of the format is stale (the backend changed in another tab or by
+the setup script), the route answers `415` with `batchFormat: "wav"` and the
+browser re-encodes the same recording and resends it once. The per-run timeout
+is overridable with `LLV_WHISPERCPP_TIMEOUT_MS`. The
 language is passed through (`auto` when none is set) and each run has a
 120-second timeout.
 
@@ -337,7 +341,7 @@ the whole board.
 | "silence — nothing recognized"                           | Recording contained no recognisable speech.                     | Speak up / check the mic; the input-level meter should move.        |
 | "audio too large (16 MB limit)"                          | Upload exceeded the 16 MB cap.                                  | Record a shorter clip (the 2-minute auto-stop normally prevents this). |
 | "whisper.cpp is not set up: …"                           | whisper.cpp selected but `whisper-cli` or the ggml model is missing. | Run `scripts/setup-whispercpp.sh`.                              |
-| "whisper.cpp needs a WAV recording…"                     | The page predates the whisper.cpp selection and recorded webm.  | Reload the page.                                                    |
+| "whisper.cpp reads WAV only…"                            | A webm reached whisper.cpp and the automatic WAV resend failed too. | Retry; the mic re-encodes to WAV on its own, so a repeat means the browser cannot decode its recording. |
 | Error mentioning `scripts/setup-whisper.sh`              | Local backend selected but the whisper venv/Python is missing.  | Run `scripts/setup-whisper.sh`.                                     |
 | "faster-whisper missing…"                                | The venv exists but `faster-whisper` is not installed in it.    | Re-run `scripts/setup-whisper.sh`.                                  |
 | "no Codex ChatGPT token (~/.codex/auth.json)…"           | ChatGPT backend selected but no Codex login found.              | Log in with Codex, then retry.                                      |

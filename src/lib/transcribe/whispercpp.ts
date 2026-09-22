@@ -24,9 +24,14 @@ export function whisperCppTimeoutMs(): number {
 }
 export const WHISPERCPP_DEFAULT_MODEL = "ggml-medium-q8_0.bin";
 const BINARY = "whisper-cli";
-const FALLBACK_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
-/* whisper.cpp's own model format; Handy's .gguf files fail to load. */
-const MODEL_FILE_RE = /^(?:ggml|whisper).*\.bin$/i;
+/** Where Homebrew puts whisper-cli (Apple silicon first, then Intel). */
+export const FALLBACK_BIN_DIRS: readonly string[] = ["/opt/homebrew/bin", "/usr/local/bin"];
+/* whisper.cpp's own model format; Handy's .gguf files fail to load. The
+   Silero VAD model shares the ggml-*.bin naming and the cache dir, so it is
+   excluded here and resolved on its own. */
+const MODEL_FILE_RE = /^(?:ggml|whisper)(?!.*silero).*\.bin$/i;
+const VAD_FILE_RE = /^ggml-silero.*\.bin$/i;
+export const WHISPERCPP_DEFAULT_VAD_MODEL = "ggml-silero-v5.1.2.bin";
 const HANDY_HF_PREFIX = "models--handy-computer--";
 
 /** Viewer-owned model dir; the setup script downloads into it. */
@@ -51,11 +56,12 @@ function isFile(file: string): boolean {
   }
 }
 
-/** LLV_WHISPERCPP_BIN, else whisper-cli on PATH, else the Homebrew bin dirs. */
-export function resolveWhisperCppBinary(): string | null {
+/** LLV_WHISPERCPP_BIN, else whisper-cli on PATH, else the Homebrew bin dirs
+    (`fallbackDirs`, a parameter so a test can run as a host without them). */
+export function resolveWhisperCppBinary(fallbackDirs: readonly string[] = FALLBACK_BIN_DIRS): string | null {
   const env = process.env.LLV_WHISPERCPP_BIN?.trim();
   if (env) return isExecutable(env) ? env : null;
-  const dirs = [...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean), ...FALLBACK_BIN_DIRS];
+  const dirs = [...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean), ...fallbackDirs];
   for (const dir of dirs) {
     const candidate = path.join(dir, BINARY);
     if (isExecutable(candidate)) return candidate;
@@ -111,11 +117,11 @@ function listDirs(dir: string): string[] {
   }
 }
 
-function modelFilesIn(dir: string): string[] {
+function modelFilesIn(dir: string, pattern: RegExp = MODEL_FILE_RE): string[] {
   try {
     return fs
       .readdirSync(dir)
-      .filter((name) => MODEL_FILE_RE.test(name))
+      .filter((name) => pattern.test(name))
       .map((name) => path.join(dir, name))
       .filter(isFile);
   } catch {
@@ -153,21 +159,35 @@ export function resolveWhisperCppModel(): string | null {
   if (handy) return handy;
   const hub = hfHubDir();
   const handyRepos = listDirs(hub).filter((dir) => path.basename(dir).startsWith(HANDY_HF_PREFIX));
-  return newest(handyRepos.flatMap((repo) => listDirs(path.join(repo, "snapshots")).flatMap(modelFilesIn)));
+  return newest(handyRepos.flatMap((repo) => listDirs(path.join(repo, "snapshots")).flatMap((dir) => modelFilesIn(dir))));
+}
+
+/**
+ * The Silero VAD model: LLV_WHISPERCPP_VAD_MODEL, else the newest
+ * ggml-silero*.bin in the Viewer cache. Optional — without it whisper-cli
+ * still runs, but it hallucinates on silence (" you" for an accidental press),
+ * which is why the setup script downloads it beside the model.
+ */
+export function resolveWhisperCppVadModel(): string | null {
+  const env = process.env.LLV_WHISPERCPP_VAD_MODEL?.trim();
+  if (env) return isFile(env) ? env : null;
+  return newest(modelFilesIn(whisperCppModelDir(), VAD_FILE_RE));
 }
 
 export interface WhisperCppStatus {
   available: boolean;
   binary: string | null;
   model: string | null;
+  /** Silero VAD model handed to whisper-cli when present; not required. */
+  vadModel: string | null;
   /** What to fix, copyable: the missing binary's or model's expected path. */
   keyPath: string;
   /** Plain-words reason naming what is missing; empty when available. */
   hint: string;
 }
 
-export function whisperCppStatus(): WhisperCppStatus {
-  const binary = resolveWhisperCppBinary();
+export function whisperCppStatus(fallbackDirs: readonly string[] = FALLBACK_BIN_DIRS): WhisperCppStatus {
+  const binary = resolveWhisperCppBinary(fallbackDirs);
   const model = resolveWhisperCppModel();
   const missing: string[] = [];
   if (!binary) {
@@ -193,6 +213,7 @@ export function whisperCppStatus(): WhisperCppStatus {
     available: missing.length === 0,
     binary,
     model,
+    vadModel: resolveWhisperCppVadModel(),
     keyPath,
     hint: missing.length ? `${missing.join("; ")} — run scripts/setup-whispercpp.sh` : "",
   };
@@ -209,15 +230,45 @@ export function isWav(bytes: Uint8Array): boolean {
   return tag(0) === "RIFF" && tag(8) === "WAVE";
 }
 
+/* Non-speech markers whisper-cli prints in place of words: [BLANK_AUDIO],
+   [MUSIC], (silence)… */
+const MARKER_RE = /\[\s*(?:BLANK_AUDIO|SILENCE|MUSIC|NOISE|INAUDIBLE|NO_SPEECH)\s*\]|\(\s*(?:silence|music|noise|inaudible)\s*\)/gi;
+/* A line made only of bracketed or starred fragments ("[Ukraїner Експедиція]",
+   "(upbeat music)", "*sighs*") is a caption-style hallucination, never speech. */
+const BRACKETED_ONLY_RE = /^(?:\s*(?:\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)\s*)+$/;
+
+/**
+ * whisper-cli's stdout (one line per segment under -nt) as dictation text:
+ * known non-speech markers and bracketed-only segments are dropped. The VAD
+ * model is what keeps silence from producing words at all; this is the net
+ * for a run without it and for the markers VAD still lets through.
+ */
+export function cleanWhisperCppOutput(stdout: string): string {
+  return stdout
+    .split("\n")
+    .map((line) => line.replace(MARKER_RE, " ").trim())
+    .filter((line) => line && !BRACKETED_ONLY_RE.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export interface WhisperCppRunOptions {
+  /** Silero VAD model; when set, whisper-cli runs with --vad -vm <model>. */
+  vadModel?: string | null;
+  timeoutMs?: number;
+}
+
 export function whisperCppTranscribe(
   binary: string,
   model: string,
   audioPath: string,
   language: string,
-  timeoutMs: number = whisperCppTimeoutMs(),
+  { vadModel = null, timeoutMs = whisperCppTimeoutMs() }: WhisperCppRunOptions = {},
 ): Promise<TranscribeResponse> {
   /* whisper-cli takes a bare language code ("en", not "en-US"). */
   const args = ["-m", model, "-f", audioPath, "-l", language.split("-")[0] || "auto", "-nt", "-np"];
+  if (vadModel) args.push("--vad", "-vm", vadModel);
   return new Promise((resolve, reject) => {
     execFile(
       binary,
@@ -232,7 +283,7 @@ export function whisperCppTranscribe(
           reject(new Error(detail));
           return;
         }
-        resolve({ text: stdout.replace(/\s+/g, " ").trim() });
+        resolve({ text: cleanWhisperCppOutput(stdout) });
       },
     );
   });

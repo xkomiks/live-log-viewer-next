@@ -5,9 +5,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
+  cleanWhisperCppOutput,
   isWav,
   resolveWhisperCppBinary,
   resolveWhisperCppModel,
+  resolveWhisperCppVadModel,
   whisperCppStatus,
   whisperCppTranscribe,
 } from "./whispercpp";
@@ -21,6 +23,7 @@ const ENV_KEYS = [
   "LLV_WHISPERCPP_BIN",
   "LLV_WHISPERCPP_MODEL",
   "LLV_WHISPERCPP_TIMEOUT_MS",
+  "LLV_WHISPERCPP_VAD_MODEL",
 ];
 const saved = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 let root = "";
@@ -53,7 +56,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "llv-whispercpp-"));
   setEnv("HOME", path.join(root, "home"));
   setEnv("XDG_CACHE_HOME", path.join(root, "cache"));
-  for (const key of ["HF_HOME", "HF_HUB_CACHE", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL", "LLV_WHISPERCPP_TIMEOUT_MS"]) {
+  for (const key of ["HF_HOME", "HF_HUB_CACHE", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL", "LLV_WHISPERCPP_TIMEOUT_MS", "LLV_WHISPERCPP_VAD_MODEL"]) {
     setEnv(key, undefined);
   }
   setEnv("PATH", path.join(root, "bin"));
@@ -127,7 +130,86 @@ describe("whisper.cpp model resolution", () => {
   });
 });
 
+describe("Silero VAD model", () => {
+  test("resolves from the Viewer cache and is never taken for the whisper model", () => {
+    const vad = touch(path.join(cacheDir(), "ggml-silero-v5.1.2.bin"), 3_000);
+    expect(resolveWhisperCppVadModel()).toBe(vad);
+    expect(resolveWhisperCppModel()).toBeNull();
+    const model = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"), 1_000);
+    expect(resolveWhisperCppModel()).toBe(model);
+  });
+
+  test("LLV_WHISPERCPP_VAD_MODEL wins, a missing file reads as none, and none still leaves the backend available", () => {
+    touch(path.join(cacheDir(), "ggml-silero-v5.1.2.bin"));
+    const override = touch(path.join(root, "vad", "silero.bin"));
+    setEnv("LLV_WHISPERCPP_VAD_MODEL", override);
+    expect(resolveWhisperCppVadModel()).toBe(override);
+    setEnv("LLV_WHISPERCPP_VAD_MODEL", path.join(root, "vad", "absent.bin"));
+    expect(resolveWhisperCppVadModel()).toBeNull();
+
+    setEnv("LLV_WHISPERCPP_VAD_MODEL", undefined);
+    fs.rmSync(path.join(cacheDir(), "ggml-silero-v5.1.2.bin"));
+    setEnv("LLV_WHISPERCPP_BIN", script(path.join(root, "bin", "whisper-cli"), "exit 0"));
+    touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+    expect(whisperCppStatus()).toMatchObject({ available: true, vadModel: null });
+  });
+
+  test("whisper-cli gets --vad -vm <model> exactly when the VAD model exists", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), 'printf "%s\\n" "$*"');
+    setEnv("LLV_WHISPERCPP_BIN", bin);
+    const model = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+    const run = async () => {
+      const status = whisperCppStatus();
+      return (await whisperCppTranscribe(bin, status.model!, "/a.wav", "", { vadModel: status.vadModel })).text;
+    };
+    const without = await run();
+    expect(without).toBe(`-m ${model} -f /a.wav -l auto -nt -np`);
+    expect(without).not.toContain("--vad");
+
+    const vad = touch(path.join(cacheDir(), "ggml-silero-v5.1.2.bin"));
+    expect(await run()).toBe(`-m ${model} -f /a.wav -l auto -nt -np --vad -vm ${vad}`);
+  });
+});
+
+describe("non-speech output filter", () => {
+  test("drops known markers and bracketed-only segments, keeps speech", () => {
+    expect(cleanWhisperCppOutput("\n [BLANK_AUDIO]\n")).toBe("");
+    expect(cleanWhisperCppOutput("\n [Ukraїner Експедиція]\n")).toBe("");
+    expect(cleanWhisperCppOutput(" (upbeat music)\n *sighs*\n [ Silence ]\n")).toBe("");
+    expect(cleanWhisperCppOutput(" Привіт, це перевірка.\n [BLANK_AUDIO]\n Друге речення.\n")).toBe(
+      "Привіт, це перевірка. Друге речення.",
+    );
+    expect(cleanWhisperCppOutput(" Open the file [BLANK_AUDIO] now.")).toBe("Open the file now.");
+    /* Brackets inside speech are speech. */
+    expect(cleanWhisperCppOutput(" Call f(x) with [1, 2].")).toBe("Call f(x) with [1, 2].");
+  });
+
+  test("a whisper-cli run that prints only a marker transcribes to empty text", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), 'printf "\\n [BLANK_AUDIO]\\n"');
+    expect((await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "")).text).toBe("");
+  });
+});
+
 describe("whisper.cpp binary resolution and status", () => {
+  test("nothing installed anywhere: not available, the hint says to install, keyPath names Homebrew's path", () => {
+    /* No env override, an empty PATH dir, and no fallback dirs: the host's own
+       whisper-cli (if any) cannot leak into the answer. */
+    touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+    expect(resolveWhisperCppBinary([])).toBeNull();
+    const status = whisperCppStatus([]);
+    expect(status.available).toBe(false);
+    expect(status.binary).toBeNull();
+    expect(status.hint).toBe("whisper-cli is not installed (brew install whisper-cpp) — run scripts/setup-whispercpp.sh");
+    expect(status.keyPath).toBe("/opt/homebrew/bin/whisper-cli");
+  });
+
+  test("the fallback dirs are searched after PATH", () => {
+    const fallback = script(path.join(root, "brew", "whisper-cli"), "exit 0");
+    expect(resolveWhisperCppBinary([path.join(root, "brew")])).toBe(fallback);
+    const onPath = script(path.join(root, "bin", "whisper-cli"), "exit 0");
+    expect(resolveWhisperCppBinary([path.join(root, "brew")])).toBe(onPath);
+  });
+
   test("LLV_WHISPERCPP_BIN wins over PATH; whisper-cli on PATH is found otherwise", () => {
     const onPath = script(path.join(root, "bin", "whisper-cli"), "exit 0");
     expect(resolveWhisperCppBinary()).toBe(onPath);
@@ -171,7 +253,7 @@ describe("whisper-cli invocation", () => {
     const pidFile = path.join(root, "pid");
     const bin = script(path.join(root, "bin", "whisper-cli"), `echo $$ > "${pidFile}"; exec /bin/sleep 30`);
     const started = Date.now();
-    await expect(whisperCppTranscribe(bin, "/m.bin", "/a.wav", "", 300)).rejects.toThrow("timed out after 0.3 s");
+    await expect(whisperCppTranscribe(bin, "/m.bin", "/a.wav", "", { timeoutMs: 300 })).rejects.toThrow("timed out after 0.3 s");
     expect(Date.now() - started).toBeLessThan(10_000);
     const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
     expect(() => process.kill(pid, 0)).toThrow();

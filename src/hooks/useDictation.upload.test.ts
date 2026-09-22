@@ -36,6 +36,7 @@ function whispercppSelected() {
     available: true,
     binary: "/fixture/whisper-cli",
     model: "/fixture/ggml-medium-q8_0.bin",
+    vadModel: null,
     keyPath: "/fixture/ggml-medium-q8_0.bin",
     hint: "",
   });

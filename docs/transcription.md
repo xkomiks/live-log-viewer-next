@@ -14,7 +14,7 @@ agents — the tmux composer (`TmuxComposer`) and the draft-agent pane
 - **idle** — a mic icon. Click it to start recording (the browser asks for
   microphone permission the first time).
 - **rec** — a live input-level meter and an elapsed timer, plus an `X` to
-  cancel. Recording stops automatically after 2 minutes.
+  cancel. Recording stops automatically after 10 minutes.
 - **busy** — a spinner shown while a finished recording is being transcribed
   (only in the record-then-transcribe path; see below).
 
@@ -119,7 +119,8 @@ scripts/setup-whispercpp.sh
 ```
 
 This installs `whisper-cli` with Homebrew (`brew install whisper-cpp`) when it is
-not on `PATH`, and downloads `ggml-medium-q8_0.bin` (~820 MB) into
+not on `PATH`, and downloads `ggml-medium-q8_0.bin` (~820 MB) and the Silero
+VAD model `ggml-silero-v5.1.2.bin` (~1 MB) into
 `~/.cache/agent-log-viewer/whispercpp`. The Handy desktop app's whisper model is
 a `.gguf` file, which whisper.cpp does not load, so the backend keeps its own
 ggml copy.
@@ -129,10 +130,19 @@ ggml copy.
 | What   | Order |
 | ------ | ----- |
 | Binary | `LLV_WHISPERCPP_BIN`, else `whisper-cli` on `PATH`, else `/opt/homebrew/bin` and `/usr/local/bin`. |
+| VAD    | `LLV_WHISPERCPP_VAD_MODEL`, else the newest `ggml-silero*.bin` in `~/.cache/agent-log-viewer/whispercpp`. Optional. |
 | Model  | `LLV_WHISPERCPP_MODEL`, else the newest `ggml*.bin`/`whisper*.bin` in `~/.cache/agent-log-viewer/whispercpp`, else Handy's `selected_model` resolved through the Hugging Face cache when it is a ggml `.bin`, else the newest such file in a `handy-computer` Hugging Face cache snapshot. |
 
-The mic menu reports the backend as available only when both are found, and
-otherwise names what is missing.
+The mic menu reports the backend as available only when the binary and the
+model are found, and otherwise names what is missing (that line is the
+server's English text, shown as-is under the localized setup step).
+
+Silence: without voice-activity detection whisper-cli invents text for a
+silent clip (" you", or a caption such as "[…]"), so an accidental mic press
+would put words into the draft. With the VAD model present the route runs
+`whisper-cli --vad -vm <model>`, and 3 s of silence transcribes to nothing. As a
+net, known non-speech markers (`[BLANK_AUDIO]`, `[MUSIC]`, `(silence)`, …) and
+segments made only of bracketed or starred fragments are always dropped.
 
 `whisper-cli` reads WAV, not the webm/opus the browser records. When this
 backend is active the token route's `409` answer carries `batchFormat: "wav"`,
@@ -339,7 +349,7 @@ the whole board.
 | "no microphone access"                                   | Browser denied microphone permission.                           | Grant mic permission for the site and retry.                        |
 | "server unavailable"                                     | The `/api/transcribe` request failed to reach the server.       | Check the app is running and reachable.                             |
 | "silence — nothing recognized"                           | Recording contained no recognisable speech.                     | Speak up / check the mic; the input-level meter should move.        |
-| "audio too large (16 MB limit)"                          | Upload exceeded the 16 MB cap.                                  | Record a shorter clip (the 2-minute auto-stop normally prevents this). |
+| "audio is too large (16 MB limit)" / "(20 MB limit for WAV, 16 MB otherwise)" | Upload exceeded the cap: 16 MB, or 20 MB for a WAV.  | Record a shorter clip (the 10-minute auto-stop normally keeps it under). |
 | "whisper.cpp is not set up: …"                           | whisper.cpp selected but `whisper-cli` or the ggml model is missing. | Run `scripts/setup-whispercpp.sh`.                              |
 | "whisper.cpp reads WAV only…"                            | A webm reached whisper.cpp and the automatic WAV resend failed too. | Retry; the mic re-encodes to WAV on its own, so a repeat means the browser cannot decode its recording. |
 | Error mentioning `scripts/setup-whisper.sh`              | Local backend selected but the whisper venv/Python is missing.  | Run `scripts/setup-whisper.sh`.                                     |

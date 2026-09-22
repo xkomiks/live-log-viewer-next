@@ -102,6 +102,7 @@ function whisperCppReady(available = true) {
     available,
     binary: available ? "/fixture/whisper-cli" : null,
     model: available ? "/fixture/ggml-medium-q8_0.bin" : null,
+    vadModel: available ? "/fixture/ggml-silero-v5.1.2.bin" : null,
     keyPath: "/fixture/whisper-cli",
     hint: available ? "" : "whisper-cli is not installed (brew install whisper-cpp) — run scripts/setup-whispercpp.sh",
   });
@@ -113,8 +114,9 @@ describe("whispercpp branch", () => {
     selectBackend("whispercpp");
     whisperCppReady();
     let audioPath = "";
-    const transcribe = spyOn(whispercpp, "whisperCppTranscribe").mockImplementation(async (bin, model, file, language) => {
+    const transcribe = spyOn(whispercpp, "whisperCppTranscribe").mockImplementation(async (bin, model, file, language, options) => {
       audioPath = file;
+      expect(options).toEqual({ vadModel: "/fixture/ggml-silero-v5.1.2.bin" });
       expect(bin).toBe("/fixture/whisper-cli");
       expect(model).toBe("/fixture/ggml-medium-q8_0.bin");
       expect(file.endsWith(".wav")).toBe(true);
@@ -182,6 +184,7 @@ describe("whispercpp branch", () => {
       available: true,
       binary: bin,
       model: "/fixture/ggml-medium-q8_0.bin",
+      vadModel: null,
       keyPath: "/fixture/ggml-medium-q8_0.bin",
       hint: "",
     });

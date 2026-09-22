@@ -88,7 +88,9 @@ export async function POST(
     const wavPath = path.join(os.tmpdir(), `viewer-dictation-${Date.now()}-${Math.floor(Math.random() * 1e6)}.wav`);
     try {
       fs.writeFileSync(wavPath, bytes);
-      return NextResponse.json(await whisperCppTranscribe(status.binary, status.model, wavPath, language));
+      return NextResponse.json(
+        await whisperCppTranscribe(status.binary, status.model, wavPath, language, { vadModel: status.vadModel }),
+      );
     } catch (error) {
       return NextResponse.json(
         { error: `whisper.cpp: ${error instanceof Error ? error.message : String(error)}` },

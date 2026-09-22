@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { Check, Copy, Loader2, Mic, Square, X } from "@/components/icons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useOverlayEscape } from "@/hooks/useOverlayEscape";
-import { fmtElapsed, METER_HEIGHT, METER_WIDTH, prewarmLiveToken, type UseDictationResult } from "@/hooks/useDictation";
+import { fmtElapsed, forgetLiveToken, METER_HEIGHT, METER_WIDTH, prewarmLiveToken, type UseDictationResult } from "@/hooks/useDictation";
 import { micVisual } from "@/lib/dictationTimer";
 import { translate, useLocale } from "@/lib/i18n";
 
@@ -24,12 +24,12 @@ export interface MicButtonViewProps extends UseDictationResult {
   anchored?: boolean;
 }
 
-type BackendId = "local" | "chatgpt" | "elevenlabs" | "soniox";
+type BackendId = "local" | "chatgpt" | "elevenlabs" | "soniox" | "whispercpp";
 
 interface BackendInfo {
   backend: BackendId;
   lockedByEnv: boolean;
-  options: { id: BackendId; available: boolean; keyPath: string }[];
+  options: { id: BackendId; available: boolean; keyPath: string; hint?: string }[];
 }
 
 const MENU_WIDTH = 300;
@@ -174,6 +174,9 @@ function BackendMenu({ anchorRef, onClose }: { anchorRef: RefObject<HTMLElement 
         return;
       }
       setInfo(json);
+      /* The next press re-asks the token route, whose answer also names the
+         batch format the newly picked backend reads. */
+      forgetLiveToken();
       close();
     } catch {
       setError(t("common.serverUnavailable"));
@@ -204,6 +207,11 @@ function BackendMenu({ anchorRef, onClose }: { anchorRef: RefObject<HTMLElement 
             {t("mic.keyTitle", { name: t(`stt.${keyOption.id}.name`) })}
           </span>
           <span className="text-[11.5px] leading-snug text-primary">{t(`stt.${keyOption.id}.fix`)}</span>
+          {keyOption.hint ? (
+            <span data-mic-key-hint className="text-[11px] leading-snug text-warning">
+              {keyOption.hint}
+            </span>
+          ) : null}
           <span className="flex items-center gap-1 rounded-[8px] border border-border bg-canvas px-2 py-1.5">
             <code className="min-w-0 flex-1 break-all font-mono text-[10.5px] text-primary">{keyOption.keyPath}</code>
             <button

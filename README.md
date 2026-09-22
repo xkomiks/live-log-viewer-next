@@ -396,7 +396,8 @@ CLI messages are English by default, and switch to Ukrainian with
 
 Composers that talk to agents have a mic button for dictating messages. By
 default transcription runs fully locally via faster-whisper — no audio leaves
-the machine. Run `scripts/setup-whisper.sh` once to install the local engine.
+the machine. Run `scripts/setup-whisper.sh` once to install the local engine,
+or `scripts/setup-whispercpp.sh` for the whisper.cpp engine (no Python needed).
 
 Two cloud backends are available as an explicit per-machine opt-in (never a UI
 toggle): ChatGPT (reuses your local Codex login) and ElevenLabs Scribe (the
@@ -481,7 +482,9 @@ All optional. Transcription variables are documented in full in
 | --- | --- |
 | `VIEWER_PROC_BACKEND` | `portable`, `linux` or `windows` — force the process-discovery backend (auto-selected by default). |
 | `LLV_LANG` | `uk` or `en` — force the CLI message language. |
-| `LLV_TRANSCRIBE_BACKEND` | `local`, `chatgpt`, or `elevenlabs` — pick the dictation backend (default `local`). |
+| `LLV_TRANSCRIBE_BACKEND` | `local`, `chatgpt`, `elevenlabs`, `soniox`, or `whispercpp` — pick the dictation backend (default `local`, or `whispercpp` when only whisper.cpp is set up). |
+| `LLV_WHISPERCPP_BIN` | Path to whisper.cpp's `whisper-cli` (default: `PATH`, then Homebrew). |
+| `LLV_WHISPERCPP_MODEL` | Path to the ggml model for the whisper.cpp backend (default: newest in `~/.cache/agent-log-viewer/whispercpp`). |
 | `LLV_WHISPER_MODEL` | faster-whisper model size (default `small`). |
 | `LLV_WHISPER_DEVICE` | `cpu` (default) or `cuda`. |
 | `LLV_WHISPER_VENV` | Path to the whisper virtualenv (default `~/.cache/agent-log-viewer/whisper-venv`). |

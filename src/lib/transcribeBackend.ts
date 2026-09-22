@@ -5,10 +5,11 @@ import path from "node:path";
 import { readCodexAuth } from "@/lib/codexAuth";
 import { configFilePath } from "@/lib/configDir";
 import { localWhisperReady, whisperPythonPath } from "@/lib/transcribe/local";
+import { whisperCppReady, whisperCppStatus } from "@/lib/transcribe/whispercpp";
 
-export type TranscribeBackend = "local" | "chatgpt" | "elevenlabs" | "soniox";
+export type TranscribeBackend = "local" | "chatgpt" | "elevenlabs" | "soniox" | "whispercpp";
 
-export const TRANSCRIBE_BACKENDS: readonly TranscribeBackend[] = ["local", "chatgpt", "elevenlabs", "soniox"];
+export const TRANSCRIBE_BACKENDS: readonly TranscribeBackend[] = ["local", "chatgpt", "elevenlabs", "soniox", "whispercpp"];
 
 export function isTranscribeBackend(value: unknown): value is TranscribeBackend {
   return typeof value === "string" && (TRANSCRIBE_BACKENDS as readonly string[]).includes(value);
@@ -16,8 +17,10 @@ export function isTranscribeBackend(value: unknown): value is TranscribeBackend 
 
 /**
  * Which transcription path handles dictation. The default is the fully local
- * faster-whisper engine, which carries no third-party terms. The cloud paths
- * (ChatGPT, ElevenLabs Scribe, Soniox) turn on via the `LLV_TRANSCRIBE_BACKEND` env
+ * faster-whisper engine, which carries no third-party terms; when its venv is
+ * missing but whisper.cpp (binary and model) is on this machine, the default is
+ * whisper.cpp instead, the other fully local engine. The cloud paths (ChatGPT,
+ * ElevenLabs Scribe, Soniox) turn on via the `LLV_TRANSCRIBE_BACKEND` env
  * (highest priority, locks the UI selector) or via the override file the mic
  * right-click menu writes.
  */
@@ -28,8 +31,9 @@ export function resolveTranscribeBackend(): TranscribeBackend {
     const fileValue = fs.readFileSync(configFilePath("transcribe-backend"), "utf8").trim().toLowerCase();
     if (isTranscribeBackend(fileValue)) return fileValue;
   } catch {
-    /* no override file: stay on the local default */
+    /* no override file: fall through to the local default */
   }
+  if (!localWhisperReady() && whisperCppReady()) return "whispercpp";
   return "local";
 }
 
@@ -46,6 +50,8 @@ export interface TranscribeBackendOption {
   available: boolean;
   /** Where the missing credential must go — shown copyable in the key popup. */
   keyPath: string;
+  /** Plain-words reason naming what is missing, when the backend can say more than a path. */
+  hint?: string;
 }
 
 export interface TranscribeBackendInfo {
@@ -57,6 +63,7 @@ export interface TranscribeBackendInfo {
 
 export function transcribeBackendInfo(): TranscribeBackendInfo {
   const env = process.env.LLV_TRANSCRIBE_BACKEND?.trim().toLowerCase();
+  const whispercpp = whisperCppStatus();
   return {
     backend: resolveTranscribeBackend(),
     lockedByEnv: isTranscribeBackend(env),
@@ -65,6 +72,12 @@ export function transcribeBackendInfo(): TranscribeBackendInfo {
       { id: "chatgpt", available: readCodexAuth() !== null, keyPath: codexAuthPath() },
       { id: "elevenlabs", available: readElevenLabsApiKey() !== null, keyPath: configFilePath("elevenlabs-api-key") },
       { id: "soniox", available: readSonioxApiKey() !== null, keyPath: configFilePath("soniox-api-key") },
+      {
+        id: "whispercpp",
+        available: whispercpp.available,
+        keyPath: whispercpp.keyPath,
+        ...(whispercpp.hint ? { hint: whispercpp.hint } : {}),
+      },
     ],
   };
 }

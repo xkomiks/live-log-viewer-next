@@ -160,6 +160,18 @@ describe("/api/transcribe/token — the existing paths are unchanged", () => {
 
     const response = await POST(request());
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: expect.stringContaining("soniox") });
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("soniox"), batchFormat: "webm" });
+  });
+
+  test("the whispercpp backend's 409 tells the client to record WAV", async () => {
+    configHome();
+    process.env.LLV_TRANSCRIBE_BACKEND = "whispercpp";
+    globalThis.fetch = mock(async () => {
+      throw new Error("must not reach a provider");
+    }) as unknown as typeof fetch;
+
+    const response = await POST(request());
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ batchFormat: "wav" });
   });
 });

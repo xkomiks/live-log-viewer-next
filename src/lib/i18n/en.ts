@@ -1024,6 +1024,9 @@ export const en = {
   "stt.soniox.name": "Soniox",
   "stt.soniox.desc": "Paid Soniox API — the fastest live transcription.",
   "stt.soniox.fix": "Put your Soniox API key (a single line) into this file:",
+  "stt.whispercpp.name": "whisper.cpp",
+  "stt.whispercpp.desc": "Free, fully local via whisper-cli — audio never leaves this machine.",
+  "stt.whispercpp.fix": "Run scripts/setup-whispercpp.sh in the app folder once; it installs whisper-cli and downloads the model. Missing:",
 
   // DeleteFileButton
   "delFile.confirm": "Delete from disk?",
@@ -2025,6 +2028,7 @@ export const en = {
   "dictation.liveError": "live transcription error",
   "dictation.connectionLost": "transcription connection dropped",
   "dictation.noMic": "no microphone access",
+  "dictation.wavFailed": "couldn't convert the recording to WAV for whisper.cpp",
 
   // OverviewBoard
   "overview.branchesLiveIn": {

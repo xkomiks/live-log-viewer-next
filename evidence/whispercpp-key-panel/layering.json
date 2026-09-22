@@ -1,0 +1,106 @@
+{
+  "generatedBy": "scripts/capture-layering.ts",
+  "head": "bb0e5e18f94f7411f23c394708e71c51c1610669",
+  "viewports": [
+    "1440x900",
+    "390x844"
+  ],
+  "passed": 4,
+  "failed": 0,
+  "results": [
+    {
+      "id": "mic-menu-orchestrator",
+      "viewport": "1440x900",
+      "ok": true,
+      "steps": [
+        "opened the microphone's menu (contextmenu) on the orchestrator seat above the board"
+      ],
+      "coverage": {
+        "overlay": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "rect": {
+          "x": 1010,
+          "y": 288,
+          "w": 300,
+          "h": 306
+        },
+        "context": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "contextZ": "72",
+        "points": 81,
+        "covered": 0,
+        "coverers": []
+      }
+    },
+    {
+      "id": "mic-key-panel-whispercpp",
+      "viewport": "1440x900",
+      "ok": true,
+      "steps": [
+        "opened the microphone's menu (contextmenu) on the orchestrator seat above the board",
+        "picked whisper.cpp, which the route answers as not set up"
+      ],
+      "coverage": {
+        "overlay": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "rect": {
+          "x": 1010,
+          "y": 23,
+          "w": 300,
+          "h": 221
+        },
+        "context": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "contextZ": "72",
+        "points": 81,
+        "covered": 0,
+        "coverers": []
+      },
+      "note": "whisper.cpp setup panel hint row: {\"text\":\"whisper-cli is not installed (brew install whisper-cpp) — run scripts/setup-whispercpp.sh\",\"path\":\"/opt/homebrew/bin/whisper-cli\",\"box\":{\"x\":1025,\"y\":119,\"width\":270,\"height\":30},\"inMenu\":true,\"inWindow\":true}"
+    },
+    {
+      "id": "mic-menu-orchestrator",
+      "viewport": "390x844",
+      "ok": true,
+      "steps": [
+        "tapped the orchestrator's conversation",
+        "opened the microphone's menu (contextmenu) on the orchestrator's conversation"
+      ],
+      "coverage": {
+        "overlay": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "rect": {
+          "x": 8,
+          "y": 478,
+          "w": 300,
+          "h": 306
+        },
+        "context": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "contextZ": "72",
+        "points": 81,
+        "covered": 0,
+        "coverers": []
+      }
+    },
+    {
+      "id": "mic-key-panel-whispercpp",
+      "viewport": "390x844",
+      "ok": true,
+      "steps": [
+        "tapped the orchestrator's conversation",
+        "opened the microphone's menu (contextmenu) on the orchestrator's conversation",
+        "picked whisper.cpp, which the route answers as not set up"
+      ],
+      "coverage": {
+        "overlay": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "rect": {
+          "x": 8,
+          "y": 563,
+          "w": 300,
+          "h": 221
+        },
+        "context": "div.fixed.z-[72].w-[300px].overflow-y-auto[role=\"menu\"][aria-label=\"Transcription method\"][data-mic-backend-menu=\"true\"]",
+        "contextZ": "72",
+        "points": 81,
+        "covered": 0,
+        "coverers": []
+      },
+      "note": "whisper.cpp setup panel hint row: {\"text\":\"whisper-cli is not installed (brew install whisper-cpp) — run scripts/setup-whispercpp.sh\",\"path\":\"/opt/homebrew/bin/whisper-cli\",\"box\":{\"x\":23,\"y\":659,\"width\":270,\"height\":30},\"inMenu\":true,\"inWindow\":true}"
+    }
+  ]
+}

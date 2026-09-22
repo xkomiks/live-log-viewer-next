@@ -48,7 +48,7 @@ afterEach(() => {
 
 describe("soniox as a transcription backend (#1020)", () => {
   test("is a selectable backend beside the existing ones", () => {
-    expect(TRANSCRIBE_BACKENDS).toEqual(["local", "chatgpt", "elevenlabs", "soniox"]);
+    expect(TRANSCRIBE_BACKENDS).toEqual(["local", "chatgpt", "elevenlabs", "soniox", "whispercpp"]);
     expect(isTranscribeBackend("soniox")).toBe(true);
   });
 
@@ -107,6 +107,70 @@ describe("soniox as a transcription backend (#1020)", () => {
       "chatgpt",
       "elevenlabs",
       "soniox",
+      "whispercpp",
     ]);
+  });
+});
+
+describe("whispercpp as a transcription backend", () => {
+  const saved = ["LLV_WHISPER_VENV", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL"].map((name) => [name, process.env[name]] as const);
+  afterEach(() => {
+    for (const [name, value] of saved) setEnv(name, value);
+  });
+
+  /* Both local engines driven by their own overrides, so the machine's real
+     venv, whisper-cli and model never decide the outcome. */
+  function engines({ local, whispercpp }: { local: boolean; whispercpp: boolean }): string {
+    const dir = configHome();
+    delete process.env.LLV_TRANSCRIBE_BACKEND;
+    const root = path.dirname(dir);
+    const venv = path.join(root, "venv");
+    if (local) {
+      fs.mkdirSync(path.join(venv, "bin"), { recursive: true });
+      fs.writeFileSync(path.join(venv, "bin", "python"), "");
+    }
+    process.env.LLV_WHISPER_VENV = venv;
+    const bin = path.join(root, "whisper-cli");
+    const model = path.join(root, "ggml-medium-q8_0.bin");
+    if (whispercpp) {
+      fs.writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
+      fs.writeFileSync(model, "model");
+    }
+    process.env.LLV_WHISPERCPP_BIN = bin;
+    process.env.LLV_WHISPERCPP_MODEL = model;
+    return dir;
+  }
+
+  test("with no override, a missing faster-whisper venv falls back to an available whisper.cpp", () => {
+    engines({ local: false, whispercpp: true });
+    expect(resolveTranscribeBackend()).toBe("whispercpp");
+  });
+
+  test("local stays the default when it is set up, or when whisper.cpp is not", () => {
+    engines({ local: true, whispercpp: true });
+    expect(resolveTranscribeBackend()).toBe("local");
+    engines({ local: false, whispercpp: false });
+    expect(resolveTranscribeBackend()).toBe("local");
+  });
+
+  test("the file and env overrides still win over the fallback", () => {
+    const dir = engines({ local: false, whispercpp: true });
+    fs.writeFileSync(path.join(dir, "transcribe-backend"), "local\n");
+    expect(resolveTranscribeBackend()).toBe("local");
+    process.env.LLV_TRANSCRIBE_BACKEND = "chatgpt";
+    expect(resolveTranscribeBackend()).toBe("chatgpt");
+  });
+
+  test("the menu option is truthful and names what is missing", () => {
+    engines({ local: true, whispercpp: false });
+    const missing = transcribeBackendInfo().options.find((option) => option.id === "whispercpp")!;
+    expect(missing.available).toBe(false);
+    expect(missing.hint).toContain("LLV_WHISPERCPP_BIN");
+    expect(missing.keyPath).toBe(process.env.LLV_WHISPERCPP_BIN!);
+
+    engines({ local: true, whispercpp: true });
+    const ready = transcribeBackendInfo().options.find((option) => option.id === "whispercpp")!;
+    expect(ready).toMatchObject({ available: true, keyPath: process.env.LLV_WHISPERCPP_MODEL! });
+    expect(ready.hint).toBeUndefined();
   });
 });

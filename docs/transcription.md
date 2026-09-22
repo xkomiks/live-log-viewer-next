@@ -20,7 +20,7 @@ agents — the tmux composer (`TmuxComposer`) and the draft-agent pane
 
 How the recognised text reaches the draft depends on the active backend:
 
-- **Batch path** (local and ChatGPT backends): you record, then click the mic
+- **Batch path** (local, whisper.cpp and ChatGPT backends): you record, then click the mic
   again (or press Enter) to stop. The audio is uploaded, transcribed, and the
   resulting text is inserted into the draft. The button shows the "busy"
   spinner while the server works.
@@ -36,7 +36,9 @@ it stops the recording, waits for the final transcript, and sends the message
 in one step. The `X` button discards the recording without transcribing it.
 
 Very short recordings (a sub-2 KB blob, i.e. an accidental tap) are dropped
-without contacting the server. Uploaded audio is capped at 16 MB.
+without contacting the server. Uploaded audio is capped at 16 MB; a WAV upload
+(what the whisper.cpp backend receives) is allowed 20 MB, enough for 16 kHz mono
+at the 10-minute cap.
 
 ## Choosing a backend
 
@@ -44,14 +46,16 @@ The backend is resolved on the server for every transcription request, in this
 order:
 
 1. **Environment variable `LLV_TRANSCRIBE_BACKEND`** — accepts `local`,
-   `chatgpt`, `elevenlabs`, or `soniox` (case-insensitive). If set to a valid
+   `chatgpt`, `elevenlabs`, `soniox`, or `whispercpp` (case-insensitive). If set to a valid
    value, it wins.
 2. **Override file `~/.config/agent-log-viewer/transcribe-backend`** — accepts
    `chatgpt`, `elevenlabs`, or `soniox` (case-insensitive). Use this to switch
    to a cloud backend without setting an env var. A value of `local` in this file is not
    needed — local is already the default. Create the file with just the backend
    name as its contents, e.g. `echo elevenlabs > ~/.config/agent-log-viewer/transcribe-backend`.
-3. **Default: `local`.**
+3. **Default: `local`** — unless the faster-whisper venv is missing and
+   whisper.cpp (binary and model) is set up, in which case the default is
+   `whispercpp`.
 
 > **Legacy paths:** the config and cache directories moved from `live-log-viewer`
 > to `agent-log-viewer` (matching the package name). Files still under the old
@@ -100,6 +104,42 @@ recording then blocks while the download runs.
 
 The route shells out to `scripts/whisper_transcribe.py` inside that venv; the
 language is auto-detected. A per-request timeout of 120 seconds applies.
+
+**Privacy:** audio and transcripts never leave the machine.
+
+### whisper.cpp — local, via `whisper-cli`
+
+The other fully local engine: the route runs whisper.cpp's `whisper-cli` on a
+ggml model. It needs no Python and no subscription.
+
+**Setup:**
+
+```bash
+scripts/setup-whispercpp.sh
+```
+
+This installs `whisper-cli` with Homebrew (`brew install whisper-cpp`) when it is
+not on `PATH`, and downloads `ggml-medium-q8_0.bin` (~820 MB) into
+`~/.cache/agent-log-viewer/whispercpp`. The Handy desktop app's whisper model is
+a `.gguf` file, which whisper.cpp does not load, so the backend keeps its own
+ggml copy.
+
+**Resolution** (read per request, so a model or binary installed later is seen):
+
+| What   | Order |
+| ------ | ----- |
+| Binary | `LLV_WHISPERCPP_BIN`, else `whisper-cli` on `PATH`, else `/opt/homebrew/bin` and `/usr/local/bin`. |
+| Model  | `LLV_WHISPERCPP_MODEL`, else the newest `ggml*.bin`/`whisper*.bin` in `~/.cache/agent-log-viewer/whispercpp`, else Handy's `selected_model` resolved through the Hugging Face cache when it is a ggml `.bin`, else the newest such file in a `handy-computer` Hugging Face cache snapshot. |
+
+The mic menu reports the backend as available only when both are found, and
+otherwise names what is missing.
+
+`whisper-cli` reads WAV, not the webm/opus the browser records. When this
+backend is active the token route's `409` answer carries `batchFormat: "wav"`,
+and the browser decodes the recording with an `OfflineAudioContext` and uploads
+16 kHz mono PCM16 WAV instead; the route checks the RIFF/WAVE header. The
+language is passed through (`auto` when none is set) and each run has a
+120-second timeout.
 
 **Privacy:** audio and transcripts never leave the machine.
 
@@ -296,6 +336,8 @@ the whole board.
 | "server unavailable"                                     | The `/api/transcribe` request failed to reach the server.       | Check the app is running and reachable.                             |
 | "silence — nothing recognized"                           | Recording contained no recognisable speech.                     | Speak up / check the mic; the input-level meter should move.        |
 | "audio too large (16 MB limit)"                          | Upload exceeded the 16 MB cap.                                  | Record a shorter clip (the 2-minute auto-stop normally prevents this). |
+| "whisper.cpp is not set up: …"                           | whisper.cpp selected but `whisper-cli` or the ggml model is missing. | Run `scripts/setup-whispercpp.sh`.                              |
+| "whisper.cpp needs a WAV recording…"                     | The page predates the whisper.cpp selection and recorded webm.  | Reload the page.                                                    |
 | Error mentioning `scripts/setup-whisper.sh`              | Local backend selected but the whisper venv/Python is missing.  | Run `scripts/setup-whisper.sh`.                                     |
 | "faster-whisper missing…"                                | The venv exists but `faster-whisper` is not installed in it.    | Re-run `scripts/setup-whisper.sh`.                                  |
 | "no Codex ChatGPT token (~/.codex/auth.json)…"           | ChatGPT backend selected but no Codex login found.              | Log in with Codex, then retry.                                      |

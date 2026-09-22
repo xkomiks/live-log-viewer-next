@@ -997,6 +997,9 @@ export const uk: Record<keyof typeof en, Message> = {
   "stt.soniox.name": "Soniox",
   "stt.soniox.desc": "Платний API Soniox — найшвидша жива транскрипція.",
   "stt.soniox.fix": "Поклади свій API-ключ Soniox (одним рядком) у цей файл:",
+  "stt.whispercpp.name": "whisper.cpp",
+  "stt.whispercpp.desc": "Безкоштовно, повністю локально через whisper-cli — аудіо не покидає цю машину.",
+  "stt.whispercpp.fix": "Запусти scripts/setup-whispercpp.sh у теці застосунку один раз; він встановить whisper-cli і завантажить модель. Бракує:",
 
   "delFile.confirm": "Видалити з диска?",
   "delFile.aria": "Видалити розмову з диска",
@@ -1962,6 +1965,7 @@ export const uk: Record<keyof typeof en, Message> = {
   "dictation.liveError": "помилка live-транскрипції",
   "dictation.connectionLost": "зʼєднання з транскрипцією обірвалось",
   "dictation.noMic": "немає доступу до мікрофона",
+  "dictation.wavFailed": "не вдалося перетворити запис у WAV для whisper.cpp",
 
   "overview.branchesLiveIn": {
     one: "{count} гілка працює у {projects}",

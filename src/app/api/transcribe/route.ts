@@ -8,9 +8,10 @@ import { readCodexAuth } from "@/lib/codexAuth";
 import { rejectCrossOrigin } from "@/lib/sameOrigin";
 import { callTranscribe } from "@/lib/transcribe/chatgpt";
 import { elevenLabsTranscribe } from "@/lib/transcribe/elevenlabs";
-import { localTranscribe } from "@/lib/transcribe/local";
+import { localTranscribe, localWhisperReady } from "@/lib/transcribe/local";
 import { sonioxTranscribe } from "@/lib/transcribe/soniox";
 import type { TranscribeResponse } from "@/lib/transcribe/types";
+import { isWav, whisperCppStatus, whisperCppTranscribe } from "@/lib/transcribe/whispercpp";
 import { readElevenLabsApiKey, readSonioxApiKey, resolveTranscribeBackend } from "@/lib/transcribeBackend";
 import type { ApiError } from "@/lib/types";
 
@@ -18,6 +19,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
+/* Uncompressed 16 kHz mono PCM16 runs 1.92 MB a minute, so a recording at the
+   10-minute cap is ~19.2 MB; only a sniffed WAV gets this larger allowance. */
+const MAX_WAV_BYTES = 20 * 1024 * 1024;
 const LANGUAGE_RE = /^[a-z]{2}(?:-[A-Z]{2})?$/;
 
 export async function POST(req: NextRequest): Promise<NextResponse<TranscribeResponse | ApiError>> {
@@ -34,8 +38,8 @@ export async function POST(req: NextRequest): Promise<NextResponse<TranscribeRes
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "missing audio file in the file field" }, { status: 400 });
   }
-  if (file.size > MAX_AUDIO_BYTES) {
-    return NextResponse.json({ error: "audio is too large (16 MB limit)" }, { status: 413 });
+  if (file.size > MAX_WAV_BYTES) {
+    return NextResponse.json({ error: "audio is too large (20 MB limit for WAV, 16 MB otherwise)" }, { status: 413 });
   }
   // Audio-only recordings can carry a video container MIME. In particular,
   // Bun infers video/webm from dictation.webm when parsing multipart uploads.
@@ -51,7 +55,44 @@ export async function POST(req: NextRequest): Promise<NextResponse<TranscribeRes
   const mime = containerAudioType || type || "audio/webm";
   const rawLanguage = form.get("language");
   const language = typeof rawLanguage === "string" && LANGUAGE_RE.test(rawLanguage) ? rawLanguage : "";
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const wav = isWav(bytes);
+  if (!wav && file.size > MAX_AUDIO_BYTES) {
+    return NextResponse.json({ error: "audio is too large (16 MB limit)" }, { status: 413 });
+  }
   const backend = resolveTranscribeBackend();
+
+  if (backend === "local" && !localWhisperReady()) {
+    return NextResponse.json(
+      { error: "Faster Whisper is not set up — run scripts/setup-whisper.sh, or pick another method from the mic's right-click menu" },
+      { status: 503 },
+    );
+  }
+
+  if (backend === "whispercpp") {
+    const status = whisperCppStatus();
+    if (!status.available || !status.binary || !status.model) {
+      return NextResponse.json({ error: `whisper.cpp is not set up: ${status.hint}` }, { status: 503 });
+    }
+    if (!wav) {
+      return NextResponse.json(
+        { error: "whisper.cpp needs a WAV recording — reload the page so the mic records WAV for it" },
+        { status: 415 },
+      );
+    }
+    const wavPath = path.join(os.tmpdir(), `viewer-dictation-${Date.now()}-${Math.floor(Math.random() * 1e6)}.wav`);
+    try {
+      fs.writeFileSync(wavPath, bytes);
+      return NextResponse.json(await whisperCppTranscribe(status.binary, status.model, wavPath, language));
+    } catch (error) {
+      return NextResponse.json(
+        { error: `whisper.cpp: ${error instanceof Error ? error.message : String(error)}` },
+        { status: 502 },
+      );
+    } finally {
+      fs.rmSync(wavPath, { force: true });
+    }
+  }
 
   if (backend === "elevenlabs") {
     const key = readElevenLabsApiKey();
@@ -89,9 +130,12 @@ export async function POST(req: NextRequest): Promise<NextResponse<TranscribeRes
     }
   }
 
-  const tmpPath = path.join(os.tmpdir(), `viewer-dictation-${Date.now()}-${Math.floor(Math.random() * 1e6)}.webm`);
+  const tmpPath = path.join(
+    os.tmpdir(),
+    `viewer-dictation-${Date.now()}-${Math.floor(Math.random() * 1e6)}.${wav ? "wav" : "webm"}`,
+  );
   try {
-    fs.writeFileSync(tmpPath, Buffer.from(await file.arrayBuffer()));
+    fs.writeFileSync(tmpPath, bytes);
 
     if (backend === "local") {
       const result = await localTranscribe(tmpPath, language);

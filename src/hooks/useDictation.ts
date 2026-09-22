@@ -11,6 +11,7 @@ import {
   METER_HEIGHT,
   METER_WIDTH,
 } from "@/lib/audio";
+import { recordingToWav } from "@/lib/audio/wav";
 import { chime } from "@/lib/chime";
 import { CAP_SECONDS, dictationCues, remaining as remainingSeconds } from "@/lib/dictationTimer";
 import { useLocale } from "@/lib/i18n";
@@ -70,11 +71,22 @@ interface LiveToken {
 let tokenCache: { token: LiveToken | null; expiresAt: number } | null = null;
 let tokenInflight: Promise<LiveToken | null> | null = null;
 
+/* What a batch recording is posted as. The token route's 409 names it: the
+   whispercpp backend reads WAV only, everything else takes webm/opus. It is
+   refreshed by every mint, so it follows the backend the mic menu picked. */
+type BatchFormat = "wav" | "webm";
+let batchFormat: BatchFormat = "webm";
+
 /* A non-200 from the token route means live mode is off (other backend, no
    key) — the caller falls back to batch without surfacing anything. */
 const mintLiveToken = async (): Promise<LiveToken | null> => {
   try {
     const res = await fetch("/api/transcribe/token", { method: "POST" });
+    if (res.status === 409) {
+      const json = (await res.json().catch(() => ({}))) as { batchFormat?: unknown };
+      batchFormat = json.batchFormat === "wav" ? "wav" : "webm";
+      return null;
+    }
     if (!res.ok) return null;
     const json = (await res.json()) as { token?: string; provider?: string };
     if (typeof json.token !== "string" || !json.token) return null;
@@ -95,6 +107,12 @@ export function prewarmLiveToken(): void {
     tokenCache = { token, expiresAt: Date.now() + (token ? TOKEN_FRESH_MS : TOKEN_NULL_MS) };
     return token;
   });
+}
+
+/** Drops a cached mint (live token or "no live mode" answer) so the next press
+    asks the server again — called when the mic menu switches backends. */
+export function forgetLiveToken(): void {
+  tokenCache = null;
 }
 
 /* Consume the prewarmed token (they are single-use, so a real one leaves the
@@ -186,7 +204,8 @@ export interface UseDictationResult {
  *    /api/transcribe/token hands out a session token, i.e. one of those two
  *    backends is selected — the answer names the provider);
  *  - batch: MediaRecorder (webm/opus) posted to /api/transcribe on stop —
- *    the fallback whenever no token is available.
+ *    the fallback whenever no token is available; re-encoded to 16 kHz mono
+ *    WAV first when the token route's 409 says the backend needs it.
  * Lifted out of MicButton so a composer can orchestrate its own send button
  * around the same recording (see TmuxComposer's stop-and-send).
  */
@@ -353,7 +372,19 @@ export function useDictation({ onError, onUnclaimedText, onLiveCommit }: UseDict
     setPhase("busy");
     try {
       const form = new FormData();
-      form.append("file", blob, "dictation.webm");
+      if (batchFormat === "wav") {
+        let wav: Blob;
+        try {
+          wav = await recordingToWav(blob);
+        } catch {
+          onError(t("dictation.wavFailed"));
+          resolvePending?.(null);
+          return;
+        }
+        form.append("file", wav, "dictation.wav");
+      } else {
+        form.append("file", blob, "dictation.webm");
+      }
       const res = await fetch("/api/transcribe", { method: "POST", body: form });
       const json = (await res.json()) as { text?: string; error?: string };
       if (!res.ok || typeof json.text !== "string") {

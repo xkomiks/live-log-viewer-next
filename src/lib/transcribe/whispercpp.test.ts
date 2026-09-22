@@ -1,0 +1,149 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+
+import {
+  isWav,
+  resolveWhisperCppBinary,
+  resolveWhisperCppModel,
+  whisperCppStatus,
+  whisperCppTranscribe,
+} from "./whispercpp";
+
+const ENV_KEYS = ["HOME", "XDG_CACHE_HOME", "HF_HOME", "HF_HUB_CACHE", "PATH", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL"];
+const saved = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
+let root = "";
+
+function setEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function touch(file: string, mtimeSeconds?: number): string {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "model");
+  if (mtimeSeconds !== undefined) fs.utimesSync(file, mtimeSeconds, mtimeSeconds);
+  return file;
+}
+
+function script(file: string, body: string): string {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`);
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+const cacheDir = () => path.join(root, "cache", "agent-log-viewer", "whispercpp");
+const hub = () => path.join(root, "home", ".cache", "huggingface", "hub");
+const handySettings = () =>
+  path.join(root, "home", "Library", "Application Support", "com.pais.handy", "settings_store.json");
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "llv-whispercpp-"));
+  setEnv("HOME", path.join(root, "home"));
+  setEnv("XDG_CACHE_HOME", path.join(root, "cache"));
+  for (const key of ["HF_HOME", "HF_HUB_CACHE", "LLV_WHISPERCPP_BIN", "LLV_WHISPERCPP_MODEL"]) setEnv(key, undefined);
+  setEnv("PATH", path.join(root, "bin"));
+});
+
+afterEach(() => {
+  fs.rmSync(root, { recursive: true, force: true });
+  for (const [key, value] of saved) setEnv(key, value);
+});
+
+describe("whisper.cpp model resolution", () => {
+  test("LLV_WHISPERCPP_MODEL wins, and a missing file reads as no model", () => {
+    const override = touch(path.join(root, "custom", "ggml-small.bin"));
+    touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+    setEnv("LLV_WHISPERCPP_MODEL", override);
+    expect(resolveWhisperCppModel()).toBe(override);
+    setEnv("LLV_WHISPERCPP_MODEL", path.join(root, "custom", "absent.bin"));
+    expect(resolveWhisperCppModel()).toBeNull();
+  });
+
+  test("the newest ggml model in the Viewer cache is used", () => {
+    touch(path.join(cacheDir(), "ggml-small.bin"), 1_000);
+    const newer = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"), 2_000);
+    touch(path.join(cacheDir(), "notes.txt"), 3_000);
+    expect(resolveWhisperCppModel()).toBe(newer);
+  });
+
+  test("Handy's selected model resolves through the HF cache when it is a ggml file", () => {
+    fs.mkdirSync(path.dirname(handySettings()), { recursive: true });
+    fs.writeFileSync(handySettings(), JSON.stringify({ settings: { selected_model: "handy-computer/whisper-small/ggml-small.bin" } }));
+    const selected = touch(path.join(hub(), "models--handy-computer--whisper-small", "snapshots", "rev1", "ggml-small.bin"), 1_000);
+    touch(path.join(hub(), "models--handy-computer--whisper-large", "snapshots", "rev1", "ggml-large.bin"), 2_000);
+    expect(resolveWhisperCppModel()).toBe(selected);
+  });
+
+  test("Handy's .gguf selection is skipped (whisper.cpp cannot load it); a ggml file in its HF cache is found", () => {
+    fs.mkdirSync(path.dirname(handySettings()), { recursive: true });
+    fs.writeFileSync(
+      handySettings(),
+      JSON.stringify({ settings: { selected_model: "handy-computer/whisper-medium-gguf/whisper-medium-Q8_0.gguf" } }),
+    );
+    const repo = path.join(hub(), "models--handy-computer--whisper-medium-gguf", "snapshots", "rev1");
+    touch(path.join(repo, "whisper-medium-Q8_0.gguf"));
+    expect(resolveWhisperCppModel()).toBeNull();
+
+    touch(path.join(hub(), "models--handy-computer--a", "snapshots", "r", "ggml-a.bin"), 1_000);
+    const newest = touch(path.join(hub(), "models--handy-computer--b", "snapshots", "r", "ggml-b.bin"), 2_000);
+    touch(path.join(hub(), "models--someone-else--c", "snapshots", "r", "ggml-c.bin"), 3_000);
+    expect(resolveWhisperCppModel()).toBe(newest);
+  });
+});
+
+describe("whisper.cpp binary resolution and status", () => {
+  test("LLV_WHISPERCPP_BIN wins over PATH; whisper-cli on PATH is found otherwise", () => {
+    const onPath = script(path.join(root, "bin", "whisper-cli"), "exit 0");
+    expect(resolveWhisperCppBinary()).toBe(onPath);
+    const override = script(path.join(root, "other", "whisper-cli"), "exit 0");
+    setEnv("LLV_WHISPERCPP_BIN", override);
+    expect(resolveWhisperCppBinary()).toBe(override);
+    setEnv("LLV_WHISPERCPP_BIN", path.join(root, "nope"));
+    expect(resolveWhisperCppBinary()).toBeNull();
+  });
+
+  test("status is available only with binary AND model, and names what is missing", () => {
+    setEnv("LLV_WHISPERCPP_BIN", path.join(root, "nope"));
+    let status = whisperCppStatus();
+    expect(status.available).toBe(false);
+    expect(status.hint).toContain("LLV_WHISPERCPP_BIN");
+    expect(status.hint).toContain("no ggml whisper model");
+    expect(status.keyPath).toBe(path.join(root, "nope"));
+
+    setEnv("LLV_WHISPERCPP_BIN", script(path.join(root, "bin", "whisper-cli"), "exit 0"));
+    status = whisperCppStatus();
+    expect(status.available).toBe(false);
+    expect(status.hint).not.toContain("LLV_WHISPERCPP_BIN");
+    expect(status.keyPath).toBe(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+
+    const model = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"));
+    status = whisperCppStatus();
+    expect(status).toMatchObject({ available: true, model, hint: "" });
+  });
+});
+
+describe("whisper-cli invocation", () => {
+  test("passes model, file and language (auto when empty, bare code for a region tag)", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), 'printf " %s\\n" "$@"');
+    const text = await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "");
+    expect(text.text).toBe("-m /m.bin -f /a.wav -l auto -nt -np");
+    expect((await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "en-US")).text).toContain("-l en ");
+    expect((await whisperCppTranscribe(bin, "/m.bin", "/a.wav", "uk")).text).toContain("-l uk ");
+  });
+
+  test("a failing run rejects with the last stderr line", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), 'echo "error: failed to read audio" >&2; exit 3');
+    await expect(whisperCppTranscribe(bin, "/m.bin", "/a.wav", "")).rejects.toThrow("failed to read audio");
+  });
+
+  test("isWav sniffs RIFF/WAVE only", () => {
+    const enc = new TextEncoder();
+    expect(isWav(enc.encode("RIFF\0\0\0\0WAVEfmt "))).toBe(true);
+    expect(isWav(enc.encode("\x1aE\xdf\xa3 webm bytes"))).toBe(false);
+    expect(isWav(enc.encode("RIFF"))).toBe(false);
+  });
+});

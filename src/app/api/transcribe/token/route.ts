@@ -27,14 +27,25 @@ export interface LiveTokenResponse {
   provider: "elevenlabs" | "soniox";
 }
 
-export async function POST(req: NextRequest): Promise<NextResponse<LiveTokenResponse | ApiError>> {
+/** What the client records when there is no live mode: whisper-cli reads WAV
+    only, every other batch backend takes the MediaRecorder's webm/opus. */
+export type BatchFormat = "wav" | "webm";
+
+export interface NoLiveResponse extends ApiError {
+  batchFormat: BatchFormat;
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse<LiveTokenResponse | NoLiveResponse | ApiError>> {
   const rejection = rejectCrossOrigin(req);
   if (rejection) return rejection;
 
   const backend = resolveTranscribeBackend();
   if (backend !== "elevenlabs" && backend !== "soniox") {
     return NextResponse.json(
-      { error: "live transcription is only available with the elevenlabs or soniox backend" },
+      {
+        error: "live transcription is only available with the elevenlabs or soniox backend",
+        batchFormat: backend === "whispercpp" ? "wav" : "webm",
+      },
       { status: 409 },
     );
   }

@@ -257,6 +257,8 @@ export interface WhisperCppRunOptions {
   /** Silero VAD model; when set, whisper-cli runs with --vad -vm <model>. */
   vadModel?: string | null;
   timeoutMs?: number;
+  /** stdout/stderr cap; a parameter so a test can overrun it cheaply. */
+  maxBufferBytes?: number;
 }
 
 export function whisperCppTranscribe(
@@ -264,7 +266,7 @@ export function whisperCppTranscribe(
   model: string,
   audioPath: string,
   language: string,
-  { vadModel = null, timeoutMs = whisperCppTimeoutMs() }: WhisperCppRunOptions = {},
+  { vadModel = null, timeoutMs = whisperCppTimeoutMs(), maxBufferBytes = 4 * 1024 * 1024 }: WhisperCppRunOptions = {},
 ): Promise<TranscribeResponse> {
   /* whisper-cli takes a bare language code ("en", not "en-US"). */
   const args = ["-m", model, "-f", audioPath, "-l", language.split("-")[0] || "auto", "-nt", "-np"];
@@ -273,13 +275,19 @@ export function whisperCppTranscribe(
     execFile(
       binary,
       args,
-      { maxBuffer: 4 * 1024 * 1024, timeout: timeoutMs },
+      { maxBuffer: maxBufferBytes, timeout: timeoutMs },
       (error, stdout, stderr) => {
         if (error) {
-          const timedOut = error.killed || (error as NodeJS.ErrnoException).code === "ETIMEDOUT";
-          const detail = timedOut
-            ? `timed out after ${timeoutMs / 1000} s`
-            : String(stderr).trim().split("\n").at(-1) || error.message;
+          /* Node also kills the child when output overruns maxBuffer, so
+             `killed` alone does not mean the timeout fired. */
+          const code = (error as NodeJS.ErrnoException).code;
+          const overran = code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+          const timedOut = !overran && (error.killed || code === "ETIMEDOUT");
+          const detail = overran
+            ? `output exceeded ${maxBufferBytes} bytes`
+            : timedOut
+              ? `timed out after ${timeoutMs / 1000} s`
+              : String(stderr).trim().split("\n").at(-1) || error.message;
           reject(new Error(detail));
           return;
         }

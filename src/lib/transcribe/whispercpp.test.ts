@@ -98,6 +98,16 @@ describe("whisper.cpp model resolution", () => {
     }
   });
 
+  test("the agreed order: a model in the Viewer cache wins over Handy's ggml selection", () => {
+    /* Operator decision 2026-09-22: the backend's own ggml download comes
+       before Handy's selected model (docs/transcription.md). */
+    fs.mkdirSync(path.dirname(handySettings()), { recursive: true });
+    fs.writeFileSync(handySettings(), JSON.stringify({ settings: { selected_model: "handy-computer/whisper-small/ggml-small.bin" } }));
+    touch(path.join(hub(), "models--handy-computer--whisper-small", "snapshots", "rev1", "ggml-small.bin"), 2_000);
+    const cached = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"), 1_000);
+    expect(resolveWhisperCppModel()).toBe(cached);
+  });
+
   test("the newest ggml model in the Viewer cache is used", () => {
     touch(path.join(cacheDir(), "ggml-small.bin"), 1_000);
     const newer = touch(path.join(cacheDir(), "ggml-medium-q8_0.bin"), 2_000);
@@ -257,6 +267,13 @@ describe("whisper-cli invocation", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
     const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
     expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  test("output past maxBuffer is reported as such, not as a timeout", async () => {
+    const bin = script(path.join(root, "bin", "whisper-cli"), 'i=0; while [ $i -lt 200 ]; do echo "a long transcript line"; i=$((i+1)); done');
+    const run = whisperCppTranscribe(bin, "/m.bin", "/a.wav", "", { maxBufferBytes: 1024, timeoutMs: 10_000 });
+    await expect(run).rejects.toThrow("output exceeded 1024 bytes");
+    await expect(run).rejects.not.toThrow("timed out");
   });
 
   test("LLV_WHISPERCPP_TIMEOUT_MS sets the default timeout", async () => {
